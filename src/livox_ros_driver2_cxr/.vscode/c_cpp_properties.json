@@ -1,0 +1,41 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/robot_base/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/pid_follow_/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/auto_decision/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/robot_msgs/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/remove_pointcloud/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/pointcloud_to_laserscan/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/openslam_gmapping/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/nav2_planner/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/nav2_lifecycle_manager/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/nav2_controller/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/nav2_bt_navigator/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/nav2_behaviors/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/nav2_behavior_tree/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/nav2_msgs/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/nav2_core/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/fast_lio/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/livox_ros_driver2/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/linefit_ground_segmentation/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/imu_complementary_filter/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/icp_localization_ros2/include/**",
+        "/home/auto/github_code/auto_sentry_mid360_ws/install/cxr_localization_ros2/include/**",
+        "/opt/ros/humble/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}
