@@ -61,6 +61,10 @@ void SerialDriverNode::gimbalCtrlCallback(const auto_aim_interfaces::msg::Gimbal
   //                                                 << "tof: " << msg->tof << std::endl
   //                                                 << "pos: " << msg->pos << std::endl
   //                                                 << "empty: " << msg->empty << std::endl;);
+// 调
+  // 如果子弹老是打在掩体这头的墙上 -> 调大角度。
+
+// 如果子弹越过了墙，但没飞到基地就落地了 -> 调大 base_dx。
 
   vision_rx_data_.data.yaw = msg->yaw;
   vision_rx_data_.data.pit = msg->pit;

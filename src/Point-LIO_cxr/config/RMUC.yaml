@@ -55,7 +55,7 @@
             scan_bodyframe_pub_en: true  
 
         pcd_save:
-            use_pcd_map_: true
+            use_pcd_map_: false
             prior_PCD_map_path: "/home/auto/Navi_PCD/RM2025_55w.pcd" #RMUC
             # prior_PCD_map_path: "/home/auto/Navi_PCD/new_world.pcd" #new world
             # prior_PCD_map_path: "/home/auto/Navi_PCD/test_home_2.pcd" #xinchangdi

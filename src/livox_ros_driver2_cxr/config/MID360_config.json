@@ -1,7 +1,10 @@
+// 1 你的电脑 → 往 雷达 56100 发配置 / 启动命令
+// 2 雷达响应 + 采集点云 / IMU3 雷达主动推送数据 → 发到 电脑 192.168.1.50:56101/56301/564014 
+// SDK/Viewer 在电脑监听这些 +1 端口，解析出图像点云
 {
   "lidar_summary_info" : {
     "lidar_type": 8
-  },
+  },//雷达监听
   "MID360": {
     "lidar_net_info" : {
       "cmd_data_port": 56100,
@@ -10,6 +13,7 @@
       "imu_data_port": 56400,
       "log_data_port": 56500
     },
+    //主机回传接收
     "host_net_info" : {
       "cmd_data_ip" : "192.168.1.50",
       "cmd_data_port": 56101,
@@ -25,7 +29,7 @@
   },
   "lidar_configs" : [
     {
-      "ip" : "192.168.1.169", 
+      "ip" : "192.168.1.178", 
       "pcl_data_type" : 1,
       "pattern_mode" : 0,
       "extrinsic_parameter" : {
