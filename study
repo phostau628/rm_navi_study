@@ -1,0 +1,303 @@
+//1：缓存点云,将最近一次的点云缓存起来,用于后续的激光雷达FOV分割,缓存的点云数量为points_cache_size,缓存的点云为points_history,当需要更新本地地图时,将points_history中的点云加入删除列表,最后调用kdtree的删除函数删除点云
+void points_cache_collect()
+{
+    PointVector points_history;
+    ikdtree.acquire_removed_points(points_history);
+    points_cache_size = points_history.size();
+}
+
+//2：激光雷达FOV分割,根据当前位姿,分割出当前FOV内的点云,并更新本地地图,如果当前FOV边界距离当前位姿小于某个阈值,则更新本地地图,并将需要删除的点云加入删除列表,最后调用kdtree的删除函数删除点云
+void lasermap_fov_segment()
+{
+    cub_needrm.shrink_to_fit();
+    V3D pos_LiD;
+    if (use_imu_as_input)
+    {
+        pos_LiD = kf_input.x_.pos + kf_input.x_.rot * Lidar_T_wrt_IMU;
+    }
+    else
+    {
+        pos_LiD = kf_output.x_.pos + kf_output.x_.rot * Lidar_T_wrt_IMU;
+    }
+    if (!Localmap_Initialized){
+        for (int i = 0; i < 3; i++){
+            LocalMap_Points.vertex_min[i] = pos_LiD(i) - cube_len / 2.0;
+            LocalMap_Points.vertex_max[i] = pos_LiD(i) + cube_len / 2.0;
+        }
+        Localmap_Initialized = true;
+        return;
+    }
+    float dist_to_map_edge[3][2];
+    bool need_move = false;
+    for (int i = 0; i < 3; i++){
+        dist_to_map_edge[i][0] = fabs(pos_LiD(i) - LocalMap_Points.vertex_min[i]);
+        dist_to_map_edge[i][1] = fabs(pos_LiD(i) - LocalMap_Points.vertex_max[i]);
+        if (dist_to_map_edge[i][0] <= MOV_THRESHOLD * DET_RANGE || dist_to_map_edge[i][1] <= MOV_THRESHOLD * DET_RANGE) need_move = true;
+    }
+    if (!need_move) return;
+    BoxPointType New_LocalMap_Points, tmp_boxpoints;
+    New_LocalMap_Points = LocalMap_Points;
+    float mov_dist = max((cube_len - 2.0 * MOV_THRESHOLD * DET_RANGE) * 0.5 * 0.9, double(DET_RANGE * (MOV_THRESHOLD -1)));
+    for (int i = 0; i < 3; i++){
+        tmp_boxpoints = LocalMap_Points;
+        if (dist_to_map_edge[i][0] <= MOV_THRESHOLD * DET_RANGE){
+            New_LocalMap_Points.vertex_max[i] -= mov_dist;
+            New_LocalMap_Points.vertex_min[i] -= mov_dist;
+            tmp_boxpoints.vertex_min[i] = LocalMap_Points.vertex_max[i] - mov_dist;
+            cub_needrm.emplace_back(tmp_boxpoints);
+        } else if (dist_to_map_edge[i][1] <= MOV_THRESHOLD * DET_RANGE){
+            New_LocalMap_Points.vertex_max[i] += mov_dist;
+            New_LocalMap_Points.vertex_min[i] += mov_dist;
+            tmp_boxpoints.vertex_max[i] = LocalMap_Points.vertex_min[i] + mov_dist;
+            cub_needrm.emplace_back(tmp_boxpoints);
+        }
+    }
+    LocalMap_Points = New_LocalMap_Points;
+    points_cache_collect();
+    if(cub_needrm.size() > 0) int kdtree_delete_counter = ikdtree.Delete_Point_Boxes(cub_needrm);
+}
+//3：加载点云文件,将点云文件加载到内存中,并转换为ROS消息格式,返回点云指针
+PointCloudXYZI::Ptr loadPointcloudFromPcd(const std::string &filename){
+
+    pcl::io::loadPCDFile(filename, cloudBlob);
+    pcl::fromPCLPointCloud2(cloudBlob, *cloud);
+    pcl::toROSMsg(*cloud,pcd_map_);
+    return cloud;
+}
+
+void publish_init_kdtree(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes)
+{
+    int size_init_ikdtree = ikdtree.size();
+    PointCloudXYZI::Ptr   laserCloudInit(new PointCloudXYZI(size_init_ikdtree, 1));
+    sensor_msgs::msg::PointCloud2 laserCloudmsg;
+    PointVector ().swap(ikdtree.PCL_Storage);
+    ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
+    laserCloudInit->points = ikdtree.PCL_Storage;
+    pcl::toROSMsg(*laserCloudInit, laserCloudmsg);
+    laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
+    laserCloudmsg.header.frame_id = "odom";
+    pubLaserCloudFullRes->publish(laserCloudmsg);
+}
+
+void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes)
+{
+    if (scan_pub_en)
+    {
+        PointCloudXYZI::Ptr laserCloudFullRes(feats_down_body);
+        int size = laserCloudFullRes->points.size();
+
+        PointCloudXYZI::Ptr   laserCloudWorld(new PointCloudXYZI(size, 1));
+        
+        for (int i = 0; i < size; i++)
+        {
+            laserCloudWorld->points[i].x = feats_down_world->points[i].x;
+            laserCloudWorld->points[i].y = feats_down_world->points[i].y;
+            laserCloudWorld->points[i].z = feats_down_world->points[i].z;
+            laserCloudWorld->points[i].intensity = feats_down_world->points[i].intensity;
+        }
+
+        sensor_msgs::msg::PointCloud2 laserCloudmsg;
+        pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
+        laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
+        laserCloudmsg.header.frame_id = "odom";
+        pubLaserCloudFullRes->publish(laserCloudmsg);
+        publish_count -= PUBFRAME_PERIOD;
+    }
+    if (pcd_save_en)
+    {
+        int size = feats_down_world->points.size();
+        PointCloudXYZI::Ptr   laserCloudWorld(new PointCloudXYZI(size, 1));
+
+        for (int i = 0; i < size; i++)
+        {
+            laserCloudWorld->points[i].x = feats_down_world->points[i].x;
+            laserCloudWorld->points[i].y = feats_down_world->points[i].y;
+            laserCloudWorld->points[i].z = feats_down_world->points[i].z;
+            laserCloudWorld->points[i].intensity = feats_down_world->points[i].intensity;
+        }
+        *pcl_wait_save += *laserCloudWorld;
+        static int scan_wait_num = 0;
+        scan_wait_num ++;
+        if (pcl_wait_save->size() > 0 && pcd_save_interval > 0  && scan_wait_num >= pcd_save_interval)
+        {
+            pcd_index ++;
+            string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
+            pcl::PCDWriter pcd_writer;
+            pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+            // pcl_wait_save->clear();
+            scan_wait_num = 0;
+        }
+    }
+}
+
+void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body)
+{
+    int size = feats_undistort->points.size();
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr laserCloudIMUBody(new pcl::PointCloud<pcl::PointXYZINormal>(size, 1));
+    sensor_msgs::msg::PointCloud2 laserCloudmsg;
+    for (int i = 0; i < size; i++)
+    {
+        pointBodyLidarToIMU(&feats_undistort->points[i], \
+                            &laserCloudIMUBody->points[i]);
+    }
+    pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
+    laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
+    laserCloudmsg.header.frame_id = "lidar_link";
+    pubLaserCloudFull_body->publish(laserCloudmsg);
+    publish_count -= PUBFRAME_PERIOD;
+}
+
+void publish_map(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap)//发布Lasermap
+{
+    bool dense_pub_en = false;
+    PointCloudXYZI::Ptr laserCloudFullRes(dense_pub_en ? feats_undistort : feats_down_body);//feats_down_body特征点
+    int size = laserCloudFullRes->points.size();
+    PointCloudXYZI::Ptr laserCloudWorld( \
+                    new PointCloudXYZI(size, 1));
+
+    for (int i = 0; i < size; i++)
+    {
+        pointBodyToWorld(&laserCloudFullRes->points[i], \
+                            &laserCloudWorld->points[i]);
+    }
+    if(is_first_frame__)
+    {
+        *pcl_wait_pub += *cloud;
+        is_first_frame__ = false;
+    }
+    *pcl_wait_pub += *laserCloudWorld;
+
+    sensor_msgs::msg::PointCloud2 laserCloudmsg;
+    pcl::toROSMsg(*pcl_wait_pub, laserCloudmsg);
+    laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
+    laserCloudmsg.header.frame_id = "odom";
+    int point_num = laserCloudmsg.row_step / laserCloudmsg.point_step;
+    // std::cout << "point_num: " << point_num << std::endl;
+    double stamp_ = (float)laserCloudmsg.header.stamp.sec;
+    pcd_map_.header.stamp = get_ros_time(lidar_end_time);
+    pcd_map_.header.frame_id = "odom";
+    // pubLaserCloudMap->publish(pcd_map_);
+    pubLaserCloudMap->publish(laserCloudmsg);
+}
+
+void set_posestamp(T & out)
+{
+    if (!use_imu_as_input)
+    {   
+        if(is_first_kf_)
+        {
+            if(task == "A")
+            {
+                kf_output.x_.pos(0) = init_x_;
+                kf_output.x_.pos(1) = init_y_;
+                kf_output.x_.pos(2) = init_z_;
+                out.position.x = kf_output.x_.pos(0);
+                out.position.y = kf_output.x_.pos(1);
+                out.position.z = kf_output.x_.pos(2);
+                // Eigen::Quaterniond q(kf_output.x_.rot);
+                // out.orientation.x = q.coeffs()[0];
+                // out.orientation.y = q.coeffs()[1];
+                // out.orientation.z = q.coeffs()[2];
+                // out.orientation.w = q.coeffs()[3];
+                // is_first_kf_ = false;
+                Eigen::Quaterniond q(cos(M_PI / 2), 0, 0, sin(M_PI / 2));
+                // 将四元数转换为旋转矩阵
+                Eigen::Matrix3d rot_matrix = q.normalized().toRotationMatrix();
+                // 将旋转矩阵转换为 MTK::SO3<double> 类型
+                MTK::SO3<double> so3_rot(rot_matrix);
+                // 将转换后的旋转矩阵赋值给 kf_output.x_.rot
+                kf_output.x_.rot = so3_rot;
+                // Eigen::Quaterniond q(kf_output.x_.rot);
+                // out.orientation.x = q.coeffs()[0];
+                // out.orientation.y = q.coeffs()[1];
+                // out.orientation.z = q.coeffs()[2];
+                // out.orientation.w = q.coeffs()[3];
+                Eigen::Quaterniond q_updated(so3_rot); // 使用更新后的 kf_output.x_.rot 构造四元数
+                out.orientation.x = q_updated.coeffs()[0];
+                out.orientation.y = q_updated.coeffs()[1];
+                out.orientation.z = q_updated.coeffs()[2];
+                out.orientation.w = q_updated.coeffs()[3];
+                is_first_kf_ = false; 
+
+            }else if(task == "B")
+            {
+                kf_output.x_.pos(0) = init_x_;
+                kf_output.x_.pos(1) = init_y_;
+                kf_output.x_.pos(2) = init_z_;
+                out.position.x = kf_output.x_.pos(0);
+                out.position.y = kf_output.x_.pos(1);
+                out.position.z = kf_output.x_.pos(2);
+                Eigen::Quaterniond q(kf_output.x_.rot);
+                out.orientation.x = q.coeffs()[0];
+                out.orientation.y = q.coeffs()[1];
+                out.orientation.z = q.coeffs()[2];
+                out.orientation.w = q.coeffs()[3];
+                is_first_kf_ = false; 
+            }
+        }
+        else
+        {
+            out.position.x = kf_output.x_.pos(0);
+            out.position.y = kf_output.x_.pos(1);
+            out.position.z = kf_output.x_.pos(2);
+            Eigen::Quaterniond q(kf_output.x_.rot);
+            out.orientation.x = q.coeffs()[0];
+            out.orientation.y = q.coeffs()[1];
+            out.orientation.z = q.coeffs()[2];
+            out.orientation.w = q.coeffs()[3];
+        }
+    }
+    else
+    {
+        out.position.x = kf_input.x_.pos(0);
+        out.position.y = kf_input.x_.pos(1);
+        out.position.z = kf_input.x_.pos(2);
+        Eigen::Quaterniond q(kf_input.x_.rot);
+        out.orientation.x = q.coeffs()[0];
+        out.orientation.y = q.coeffs()[1];
+        out.orientation.z = q.coeffs()[2];
+        out.orientation.w = q.coeffs()[3];
+    }
+}
+
+void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped, std::unique_ptr<tf2_ros::TransformBroadcaster> & tf_br)
+{
+    odomAftMapped.header.frame_id = "odom";
+    odomAftMapped.child_frame_id = "lidar_link";
+    if (publish_odometry_without_downsample)
+    {
+        odomAftMapped.header.stamp = get_ros_time(time_current);
+    }
+    else
+    {
+        odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
+    }
+    set_posestamp(odomAftMapped.pose.pose);
+    pubOdomAftMapped->publish(odomAftMapped);
+    geometry_msgs::msg::TransformStamped transformStamped;
+    transformStamped.transform.translation.x = odomAftMapped.pose.pose.position.x;
+    transformStamped.transform.translation.y = odomAftMapped.pose.pose.position.y;
+    transformStamped.transform.translation.z = odomAftMapped.pose.pose.position.z;
+    transformStamped.transform.rotation.w = odomAftMapped.pose.pose.orientation.w;
+    transformStamped.transform.rotation.x = odomAftMapped.pose.pose.orientation.x;
+    transformStamped.transform.rotation.y = odomAftMapped.pose.pose.orientation.y;
+    transformStamped.transform.rotation.z = odomAftMapped.pose.pose.orientation.z;
+    transformStamped.header.stamp = rclcpp::Time(odomAftMapped.header.stamp);
+    transformStamped.header.frame_id = "odom";
+    transformStamped.child_frame_id = "lidar_link";
+    // std::cout << "a"<<std::endl;
+    tf_br->sendTransform(transformStamped);
+}
+
+void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
+{
+    set_posestamp(msg_body_pose.pose);
+    msg_body_pose.header.stamp = get_ros_time(lidar_end_time);
+    msg_body_pose.header.frame_id = "odom";
+    static int jjj = 0;
+    jjj++;
+    {
+        path.poses.emplace_back(msg_body_pose);
+        pubPath->publish(path);
+    }
+}        

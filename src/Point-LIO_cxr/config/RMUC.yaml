@@ -1,31 +1,70 @@
 /**:
     ros__parameters:
+  # ========= 1. 通用配置（接收数据）===============
         common:
+            # 订阅 Livox 雷达点云话题,抄driver的配置
             lid_topic:  "/livox/lidar" 
+
             # imu_topic:  "/imu/data"  #from imu_complementary_filter
+
+            # 订阅 IMU 话题（这里用雷达自带的 IMU）
             imu_topic:  "/livox/imu" 
-            con_frame: false # true: if you need to combine several LiDAR frames into one
-            con_frame_num: 1 # the number of frames combined
-            cut_frame: false # true: if you need to cut one LiDAR frame into several subframes
-            cut_frame_time_interval: 0.1 # should be integral fraction of 1 / LiDAR frequency
-            time_lag_imu_to_lidar: 0.0 # Time offset between LiDAR and IMU calibrated by other algorithms, e.g., LI-Init (find in Readme)
+            
+            # 是否合并多帧点云（一般 false，不需要改）
+            con_frame: false
+            
+            # 合并几帧（false 时无效）
+            con_frame_num: 1
+            
+            # 是否切分点云（一般 false）
+            cut_frame: false
+            
+            # 切分时间间隔
+            cut_frame_time_interval: 0.1
+            
+            # IMU 与雷达时间偏移（新手保持 0）
+            time_lag_imu_to_lidar: 0.0
+            # between LiDAR and IMU calibrated by other algorithms, e.g., LI-Init (find in Readme)
                                     # the timesample of IMU is transferred from the current timeline to LiDAR's timeline by subtracting this value
             
-
+  # ========= 2. 点云预处理（适配你的雷达）===============
         preprocess:
+            # 雷达类型：1 = Livox 系列（Mid360 必须填 1）
             lidar_type: 1  
+            
+            # Mid360 是 4 线
             scan_line: 4
+            
+            # Mid360 扫描频率 10Hz
             scan_rate: 10
+            
+            # 时间戳单位 3 = 秒（Livox 固定）
             timestamp_unit: 3           
+            
+            # 盲区 0.1 米（太近的点丢掉）
             blind: 0.1 
 
+  # ========= 3. 核心建图算法配置 ========     
         mapping:
+            # 启用 IMU （必须 true，否则不能运行）
             imu_en: true
+            
+            # 剧烈运动启动（一般 false）
             start_in_aggressive_motion: false 
+
+            # 不自动估计外参 → 使用下面手动写的雷达 IMU 坐标转换（如果你不确定，保持 false）
             extrinsic_est_en: false 
+            
+            # IMU 积分时间间隔（Mid360 固定 0.005 秒）
             imu_time_inte: 0.005 
+
+            # IMU 量程限制（Mid360 固定 3.0 m/s^2）
             satu_acc: 3.0 
+            
+            # IMU 量程限制（Mid360 固定 35.0 rad/s）
             satu_gyro: 35.
+            
+            #忽略
             acc_norm: 1.0
             lidar_meas_cov: 0.001
             acc_cov_output: 500.
@@ -35,24 +74,45 @@
             imu_meas_acc_cov: 0.1
             imu_meas_omg_cov: 0.1
             gyr_cov_input: 0.01 
-            acc_cov_input: 0.1 
+            acc_cov_input: 0.1
+            
+            # 平面阈值（Mid360 固定 0.1）
+            # 0.1 是一个经验值，根据实际情况调整
             plane_thr: 0.1 
+
+            # 匹配半径（Mid360 固定 81.0）
             match_s: 81.0
+
+            # 雷达FOV（Mid360 固定 360.0）
             fov_degree: 360. 
+
+            # 检测范围距离（Mid360 固定 450.0）
             det_range: 450.0
+
+            # 重力对齐（Mid360 固定 false）
             gravity_align: false 
             gravity: [0.0, 0.0, -0.9810] 
             gravity_init: [0.0, 0.0, -0.9810] 
+
+            # 雷达和imu外参（Mid360 固定）重要
+            #平移向量：IMU坐标-雷达坐标（Mid360 固定）
             extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
+
+            # 旋转矩阵：单位矩阵-方向完全一致（Mid360 固定）
             extrinsic_R: [  1., 0., 0.,
                             0., 1., 0.,
                             0., 0., 1.]    
+
+        # ========= 4. 里程计配置 ========     
         odometry: 
+            # 不发布过密的里程计（Mid360 固定 false）
             publish_odometry_without_downsample: false
+
+        # ========= 5. 数据发布配置（rviz 可视化） ========     
         publish:
-            path_en: true                 
-            scan_publish_en: true         
-            scan_bodyframe_pub_en: true  
+            path_en: true        # 发布路径（rviz 可视化）         
+            scan_publish_en: true        # 发布扫描点云（rviz 可视化）         
+            scan_bodyframe_pub_en: true  #发布机体坐标系点云
 
         pcd_save:
             use_pcd_map_: false
@@ -68,7 +128,9 @@
             #/home/auto/code/PCD/test_no_wall_2.pcd  /home/auto/code/PCD/scans_3v3.pcd /home/auto/code/PCD/scans_3v3_rot_rem.pcd test_no_wall_2 test_no_wall_2_only_edge
             #test_no_wall_3 /home/auto/code/PCD/gongxun_1.pcd /home/auto/github_code/auto_sentry_mid360_ws_simple/file/5v5_5.pcd
             pcd_save_en: true
-            interval: -1                  
+            #为什么没有save_path? 因为在src的laser_mapping.cpp里直接写死了保存路径和文件名，保持和之前一致就行了，不需要改yaml
+        
+            interval: -1    #保存间隔，单位帧，-1 表示只保存最后一帧（一般 -1 就够了）              
         # init_pos:
         #     # init_x: 6.0
         #     # init_y: -0.3

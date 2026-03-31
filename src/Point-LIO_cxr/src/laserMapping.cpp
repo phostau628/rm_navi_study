@@ -95,6 +95,7 @@ rclcpp::Time get_ros_time(double timestamp)
     uint32_t nanosec = nanosec_d;
     return rclcpp::Time(sec, nanosec);
 }
+//安全退出ctrl+c
 void SigHandle(int sig)
 {
     flg_exit = true;
@@ -137,6 +138,11 @@ inline void dump_lio_state_to_log(FILE *fp)
     fprintf(fp, "\r\n");  
     fflush(fp);
 }
+
+//步骤6：将激光雷达点转换到IMU坐标系
+//用外参 R、T 把点转到 IMU 坐标系
+//输入：激光雷达点pi，输出：IMU点po
+//本质为修正imu位置和雷达原点的位置关系。
 void pointBodyLidarToIMU(PointType const * const pi, PointType * const po)
 {
     V3D p_body_lidar(pi->x, pi->y, pi->z);
@@ -146,7 +152,8 @@ void pointBodyLidarToIMU(PointType const * const pi, PointType * const po)
         if (!use_imu_as_input)
         {
             p_body_imu = kf_output.x_.offset_R_L_I * p_body_lidar + kf_output.x_.offset_T_L_I;
-        }
+        } //公式：p(imu) = R(imu) * p(lidar) + T(imu)
+        // R为旋转矩阵，T为平移矩阵，p为点坐标
         else
         {
             p_body_imu = kf_input.x_.offset_R_L_I * p_body_lidar + kf_input.x_.offset_T_L_I;
@@ -155,12 +162,16 @@ void pointBodyLidarToIMU(PointType const * const pi, PointType * const po)
     else
     {
         p_body_imu = Lidar_R_wrt_IMU * p_body_lidar + Lidar_T_wrt_IMU;
-    }
+    }//公式：p(imu) = R(imu) * p(lidar) + T(imu)
+        // R为旋转矩阵，T为平移矩阵，p为点坐标
     po->x = p_body_imu(0);
     po->y = p_body_imu(1);
     po->z = p_body_imu(2);
     po->intensity = pi->intensity;
 }
+
+//将激光雷达点缓存起来，等待后续处理， 
+//缓存的点是激光雷达点，不是IMU点，需要转换到IMU坐标系后，才能进行后续处理
 void points_cache_collect()
 {
     PointVector points_history;
@@ -216,6 +227,9 @@ void lasermap_fov_segment()
     points_cache_collect();
     if(cub_needrm.size() > 0) int kdtree_delete_counter = ikdtree.Delete_Point_Boxes(cub_needrm);
 }
+
+//激光雷达数据回调函数
+//输入：激光雷达数据msg，输出：无
 void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr &msg) 
 {
     mtx_buffer.lock();
@@ -232,7 +246,17 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr &msg)
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     PointCloudXYZI::Ptr  ptr_div(new PointCloudXYZI());
     double time_div = rclcpp::Time(msg->header.stamp).seconds();
-    p_pre->process(msg, ptr);
+    p_pre->process(msg, ptr); //对激光雷达数据进行预处理：
+// 解析雷达原始报文（Livox / 标准点云）
+// 计算每个点 x, y, z，3D坐标（关键）
+// （公式：x = R (距离)* cos(elevation)垂直角 * cos(azimuth)水平角,
+// y = R * cos(elevation) * sin(azimuth), 
+// z = R * sin(elevation))
+// 计算每个点 intensity（强度）
+// （物体越白 / 越亮 → intensity 越大 （用于：地面过滤，特征筛选）
+// 给每个点打上【微秒级时间戳】（存在 curvature 字段）点的时间 = 帧起始时间 + 点的时间偏移（去畸变必须知道每个点是何时发射的）
+// 过滤太近 / 太远的点（this->declare_parameter<double>("preprocess.blind", 0.5);）
+// 输出：一帧带时间戳的原始点云 （输出：PointCloudXYZI::Ptr）
     if (cut_frame)
     {
         sort(ptr->points.begin(), ptr->points.end(), time_list);
@@ -285,7 +309,7 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr &msg)
     }
     else
     { 
-        lidar_buffer.emplace_back(ptr);
+        lidar_buffer.emplace_back(ptr); //将激光雷达数据缓存起来，等待后续处理
         time_buffer.emplace_back(get_time_sec(msg->header.stamp));
     }
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
@@ -294,25 +318,49 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr &msg)
 }
 void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg) 
 {
+    // ===================== 时间获取（没用，调试用）=====================
     auto curr_time = std::chrono::high_resolution_clock::now();
     auto msg_time_chrono = std::chrono::time_point<std::chrono::high_resolution_clock>(
     std::chrono::seconds(msg->header.stamp.sec) + 
     std::chrono::nanoseconds(msg->header.stamp.nanosec));
     mtx_buffer.lock();
+
+    // ===================== 记录预处理开始时间（调试用）=====================
     double preprocess_start_time = omp_get_wtime();
+
+    // ===================== 雷达帧计数 +1 =====================
     scan_count ++;
+
+    // 如果这一帧时间 < 上一帧时间 → 说明乱序 → 直接丢掉
     if (get_time_sec(msg->header.stamp) < last_timestamp_lidar)
     {
         mtx_buffer.unlock();
         sig_buffer.notify_all();
         return;
     }
+    
+    // 更新上一帧时间为当前帧时间
     last_timestamp_lidar = get_time_sec(msg->header.stamp);
+    
+    //步骤1：创建两个点云容器（预处理完成后的点云 / 分割点云）
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     PointCloudXYZI::Ptr  ptr_div(new PointCloudXYZI());
+    //步骤2：对激光雷达数据进行预处理：
     p_pre->process(msg, ptr);
+//对激光雷达数据进行预处理：
+// 解析雷达原始报文（Livox / 标准点云）
+// 计算每个点 x, y, z，3D坐标（关键）
+// （公式：x = R (距离)* cos(elevation)垂直角 * cos(azimuth)水平角,
+// y = R * cos(elevation) * sin(azimuth), 
+// z = R * sin(elevation))
+// 计算每个点 intensity（强度）
+// （物体越白 / 越亮 → intensity 越大 （用于：地面过滤，特征筛选）
+// 给每个点打上【微秒级时间戳】（存在 curvature 字段）点的时间 = 帧起始时间 + 点的时间偏移（去畸变必须知道每个点是何时发射的）
+// 过滤太近 / 太远的点（this->declare_parameter<double>("preprocess.blind", 0.5);）
+// 输出：一帧带时间戳的原始点云 （输出：PointCloudXYZI::Ptr）
     double time_div = get_time_sec(msg->header.stamp);
-    if (cut_frame)
+    //步骤3：如果cut_frame参数为true，按照时间戳对点云进行分割；如果con_frame参数为true，按照时间戳对点云进行合并；否则不进行分割和合并，直接把完整一帧放进队列
+    if (cut_frame)//false
     {
         sort(ptr->points.begin(), ptr->points.end(), time_list);
 
@@ -336,7 +384,7 @@ void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg)
             time_buffer.push_back(time_div);
         }
     }
-    else if (con_frame)
+    else if (con_frame) //false
     {
         if (frame_ct == 0)
         {
@@ -362,15 +410,18 @@ void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg)
             frame_ct = 0;
         }
     }
-    else
+    else //做正常处理,不进行分割和合并
     {
-        lidar_buffer.emplace_back(ptr);
-        time_buffer.emplace_back(get_time_sec(msg->header.stamp));
+        // 直接把完整一帧放进队列
+        lidar_buffer.emplace_back(ptr);//将激光雷达数据缓存起来，等待后续处理
+        time_buffer.emplace_back(get_time_sec(msg->header.stamp));//记录当前帧时间
     }
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
+
+
 void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr &msg_in) 
 {    
     rclcpp::Time time_;
@@ -388,11 +439,14 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr &msg_in)
         sig_buffer.notify_all();
         return;
     }
-    imu_deque.emplace_back(msg);
+    imu_deque.emplace_back(msg); //将IMU数据缓存起来，等待后续处理
     last_timestamp_imu = timestamp;
     mtx_buffer.unlock();
-    sig_buffer.notify_all();
+    sig_buffer.notify_all(); //通知后续线程，有新的IMU数据
 }
+//步骤4：数据同步，将激光雷达数据和IMU数据同步到一个时间点，存储在MeasureGroup结构体中，供后续处理使用，
+//如果激光雷达数据和IMU数据时间不同步，取激光雷达数据时间点的前一个IMU数据和后一个IMU数据进行线性插值，得到激光雷达数据时间点的IMU数据，如果没有IMU数据，直接使用激光雷达数据时间点的前一个IMU数据，如果没有前一个IMU数据，直接使用激光雷达数据时间点的同步，无法进行后一个IMU数据，如果都没有，返回false，表示数据不后续处理。
+//这是紧耦合的基础
 bool sync_packages(MeasureGroup &meas)
 {
     if (!imu_en)
@@ -492,6 +546,7 @@ bool sync_packages(MeasureGroup &meas)
     lidar_pushed = false;
     return true;
 }
+//步骤9：把当前帧点云加入 ikdtree 地图中，增量式更新地图（int no_need_down_num_ = ikdtree.Add_Points(PointNoNeedDownsample, false);）
 void map_incremental()
 {
     PointVector PointToAdd;
@@ -530,7 +585,7 @@ void map_incremental()
                     PointNoNeedDownsample.emplace_back(feats_down_world->points[i]);
             }
         }
-    int add_point_size = ikdtree.Add_Points(PointToAdd, true);
+   c
     // std::cout << "add_point_size: " << add_point_size << std::endl;
     int no_need_down_num_ = ikdtree.Add_Points(PointNoNeedDownsample, false);
     // std::cout << "no_need_down_num_: " << no_need_down_num_ << std::endl;
@@ -1000,7 +1055,7 @@ private:
             propag_time = 0;
             update_time = 0;
             t0 = omp_get_wtime();
-            p_imu->Process(Measures, feats_undistort);
+            p_imu->Process(Measures, feats_undistort); //步骤5：imu去畸变，feats_undistort = 无畸变、机体坐标系点云，Measures:时间同步后的点云和imu数据
             if (p_imu->imu_need_init_)
             {
                 return;
@@ -1073,7 +1128,7 @@ private:
             if(space_down_sample)
             {
                 downSizeFilterSurf.setInputCloud(feats_undistort);
-                downSizeFilterSurf.filter(*feats_down_body);
+                downSizeFilterSurf.filter(*feats_down_body);  //步骤7：对无畸变的点云进行体素滤波，得到降采样后的点云feats_down_body
                 sort(feats_down_body->points.begin(), feats_down_body->points.end(), time_list); 
             }
             else
@@ -1093,7 +1148,7 @@ private:
                 feats_down_world->resize(feats_down_size);
                 for(int i = 0; i < feats_down_size; i++)
                 {
-                    pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
+                    pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));//步骤8：用当前估计的位姿，把点从机体坐标系 → 世界坐标系
                 }
                 for (size_t i = 0; i < feats_down_world->size(); i++) 
                 {
