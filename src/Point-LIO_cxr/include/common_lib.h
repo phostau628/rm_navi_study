@@ -26,7 +26,7 @@ using namespace Eigen;
 #define CUBE_LEN  (6.0)
 #define LIDAR_SP_LEN    (2)
 #define INIT_COV   (0.0001)
-#define NUM_MATCH_POINTS    (5)
+#define NUM_MATCH_POINTS    (5)  //近邻搜索要用的点数
 #define MAX_MEAS_DIM        (10000)
 
 #define VEC_FROM_ARRAY(v)        v[0],v[1],v[2]
