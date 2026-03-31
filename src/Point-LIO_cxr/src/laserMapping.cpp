@@ -781,6 +781,7 @@ void set_posestamp(T & out)
         out.orientation.w = q.coeffs()[3];
     }
 }
+// 发布融合后的位姿
 void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped, std::unique_ptr<tf2_ros::TransformBroadcaster> & tf_br)
 {
     odomAftMapped.header.frame_id = "odom";
@@ -1170,7 +1171,7 @@ private:
             }
             normvec->resize(feats_down_size);
             feats_down_world->resize(feats_down_size);
-            Nearest_Points.resize(feats_down_size);
+            Nearest_Points.resize(feats_down_size); //ikd-tree查询最近邻点
             t2 = omp_get_wtime();
             crossmat_list.reserve(feats_down_size);
             pbody_list.reserve(feats_down_size);
@@ -1236,8 +1237,9 @@ private:
                             imu_last = imu_next;
                             imu_next = *(imu_deque.front());
                             imu_deque.pop_front();
-                            double dt = get_time_sec(imu_last.header.stamp) - time_predict_last_const;
-                            kf_output.predict(dt, Q_output, input_in, true, false);
+                            double dt = get_time_sec(imu_last.header.stamp) - time_predict_last_const; // 第一步：卡尔曼预测，dt为当前IMU时间与上次预测的时间差
+                            kf_output.predict(dt, Q_output, input_in, true, false);//纯靠IMU，从上一时刻推算当前时刻的位姿
+                        // 输入：dt(时间差), Q_output(过程噪声), input_in(IMU数据)
                             time_predict_last_const = get_time_sec(imu_last.header.stamp);
                             imu_comes = time_current > get_time_sec(imu_next.header.stamp);
                             {
@@ -1277,7 +1279,7 @@ private:
                         idx += time_seq[k];
                         continue;
                     }
-                    if (!kf_output.update_iterated_dyn_share_modified())
+                    if (!kf_output.update_iterated_dyn_share_modified()) // 第三步：卡尔曼融合更新
                     {
                         idx = idx+time_seq[k];
                         continue;
@@ -1286,7 +1288,8 @@ private:
                         
                     if (publish_odometry_without_downsample)
                     {
-                        publish_odometry(pubOdomAftMapped, tf_broadcaster);
+                        publish_odometry(pubOdomAftMapped, tf_broadcaster);// 发布融合后的位姿
+
                         if (runtime_pos_log)
                         {
                             state_out = kf_output.x_;
@@ -1299,7 +1302,7 @@ private:
                     {
                         PointType &point_body_j  = feats_down_body->points[idx+j+1];
                         PointType &point_world_j = feats_down_world->points[idx+j+1];
-                        pointBodyToWorld(&point_body_j, &point_world_j);
+                        pointBodyToWorld(&point_body_j, &point_world_j);//【卡尔曼融合后的位姿】转换到世界坐标系
                     }
                     solve_time += omp_get_wtime() - solve_start;
                     update_time += omp_get_wtime() - t_update_start;
@@ -1358,7 +1361,7 @@ private:
                         t_last = get_time_sec(imu_last.header.stamp);
                         imu_prop_cov = true;
                     }      
-                    double dt = time_current - t_last;
+                    double dt = time_current - t_last; // 第一步：卡尔曼预测，dt为当前点云时间与上次预测的时间差
                     t_last = time_current;
                     double propag_start = omp_get_wtime(); 
                     if(!prop_at_freq_of_imu)
@@ -1400,7 +1403,7 @@ private:
                     {
                         PointType &point_body_j  = feats_down_body->points[idx+j+1];
                         PointType &point_world_j = feats_down_world->points[idx+j+1];
-                        pointBodyToWorld(&point_body_j, &point_world_j); 
+                        pointBodyToWorld(&point_body_j, &point_world_j); // 从体坐标系到世界坐标系转换
                     }
                     solve_time += omp_get_wtime() - solve_start;
                     update_time += omp_get_wtime() - t_update_start;
